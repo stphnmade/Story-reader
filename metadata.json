@@ -1,0 +1,5 @@
+{
+  "name": "Reddit Story Reader TTS",
+  "description": "An application that reads Reddit stories aloud using an expressive, AI-powered text-to-speech voice. Paste your story and listen to it come to life with a relatable tone.",
+  "requestFramePermissions": []
+}
