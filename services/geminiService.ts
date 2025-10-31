@@ -3,7 +3,7 @@ import { GoogleGenAI, Modality, HarmCategory, HarmBlockThreshold } from "@google
 // IMPORTANT: Assumes process.env.API_KEY is available in the environment
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY! });
 
-export const generateSpeech = async (text: string, temperature: number): Promise<string> => {
+export const generateSpeech = async (text: string, temperature: number, voice: string): Promise<string> => {
     const prompt = text;
   
     try {
@@ -14,7 +14,7 @@ export const generateSpeech = async (text: string, temperature: number): Promise
                 responseModalities: [Modality.AUDIO],
                 speechConfig: {
                     voiceConfig: {
-                        prebuiltVoiceConfig: { voiceName: 'Charon' },
+                        prebuiltVoiceConfig: { voiceName: voice },
                     },
                 },
                 temperature: temperature,
@@ -107,18 +107,16 @@ Rewritten Text:`;
 
 export const generateStoryTitle = async (text: string): Promise<string> => {
     const model = 'gemini-2.5-flash';
-    const prompt = `Summarize the following text into a short, 4-6 word, filesystem-friendly filename.
-    - Use hyphens instead of spaces.
-    - Use only lowercase letters, numbers, and hyphens.
-    - Do not include any file extension.
-    - Example: "my-sisters-wedding-drama"
+    const prompt = `Based on the following story, create a short, descriptive title of 4-6 words. This title will be used as a filename.
+- Capture the essence of the story.
+- Example: "My Sister Wore White to My Wedding"
 
-    TEXT:
-    ---
-    ${text}
-    ---
-    
-    FILENAME:`;
+STORY:
+---
+${text}
+---
+
+TITLE:`;
 
     try {
         const response = await ai.models.generateContent({
@@ -128,11 +126,10 @@ export const generateStoryTitle = async (text: string): Promise<string> => {
 
         const title = response.text?.trim() || 'story';
 
-        // Sanitize the filename one last time to be safe
+        // Sanitize for filesystem, keeping it readable
         return title
-            .toLowerCase()
-            .replace(/\s+/g, '-') // Replace spaces with hyphens
-            .replace(/[^a-z0-9-]/g, ''); // Remove any non-alphanumeric characters except hyphens
+            .replace(/\s+/g, '-') // Replace spaces with hyphens for readability
+            .replace(/[\\/:*?"<>|]/g, ''); // Remove invalid filename characters
 
     } catch (error) {
         console.error("Gemini API call for title generation failed:", error);

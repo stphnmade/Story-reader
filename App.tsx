@@ -1,7 +1,10 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { generateSpeech, rewriteStory, generateStoryTitle } from './services/geminiService';
 import { decode, decodeAudioData, encodeWAV } from './utils/audio';
+import { expandAcronyms } from './utils/text';
 import { PlayIcon, StopIcon, LoadingSpinnerIcon, MicIcon, SparklesIcon, DownloadIcon } from './components/Icons';
+
+const VOICES = ['Charon', 'Kore', 'Puck', 'Zephyr', 'Fenrir'];
 
 const App: React.FC = () => {
   const [storyText, setStoryText] = useState<string>('');
@@ -13,6 +16,7 @@ const App: React.FC = () => {
   const [playbackRate, setPlaybackRate] = useState<number>(1);
   const [pitch, setPitch] = useState<number>(0);
   const [temperature, setTemperature] = useState<number>(0.3);
+  const [voice, setVoice] = useState<string>('Charon');
   const [audioData, setAudioData] = useState<Uint8Array | null>(null);
   const [storyTitle, setStoryTitle] = useState<string>('story');
 
@@ -61,7 +65,8 @@ const App: React.FC = () => {
     setStoryTitle('story'); // Reset title to default
 
     try {
-      const base64Audio = await generateSpeech(storyText, temperature);
+      const processedText = expandAcronyms(storyText);
+      const base64Audio = await generateSpeech(processedText, temperature, voice);
 
       if (!audioContextRef.current) {
         audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
@@ -161,7 +166,7 @@ const App: React.FC = () => {
             />
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-x-8 gap-y-4 my-6">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-x-8 gap-y-6 my-6">
               <div>
                   <label htmlFor="speed" className="block mb-2 text-sm font-medium text-gray-400">
                       Speed: <span className="font-bold text-gray-200 tabular-nums">{playbackRate.toFixed(1)}x</span>
@@ -210,10 +215,34 @@ const App: React.FC = () => {
                       disabled={isLoading}
                   />
               </div>
+              <div>
+                  <label htmlFor="voice" className="block mb-2 text-sm font-medium text-gray-400">
+                      Voice
+                  </label>
+                  <select
+                      id="voice"
+                      value={voice}
+                      onChange={(e) => setVoice(e.target.value)}
+                      disabled={isLoading}
+                      className="w-full p-2 bg-gray-700 border-2 border-gray-700 rounded-lg focus:ring-2 focus:ring-brand-orange focus:border-brand-orange transition-colors duration-200 appearance-none"
+                  >
+                      {VOICES.map((v) => (
+                          <option key={v} value={v}>{v}</option>
+                      ))}
+                  </select>
+              </div>
           </div>
         </main>
 
         <footer className="flex flex-col items-center justify-center space-y-4">
+          {audioData && !isLoading && (
+              <div className="text-center w-full bg-gray-700/50 p-3 rounded-lg">
+                  <p className="text-sm text-gray-400 font-medium">Download Filename</p>
+                  <p className="mt-1 font-mono text-gray-200 bg-gray-900 px-3 py-1.5 rounded-md text-sm truncate" title={`${storyTitle}.wav`}>
+                      {storyTitle}.wav
+                  </p>
+              </div>
+          )}
           <div className="flex items-center gap-4">
             <button
               onClick={handlePlay}
