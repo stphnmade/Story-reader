@@ -6,8 +6,13 @@ import { PlayIcon, StopIcon, LoadingSpinnerIcon, MicIcon, SparklesIcon, Download
 
 const VOICES = ['Charon', 'Kore', 'Puck', 'Zephyr', 'Fenrir'];
 
+const generateDefaultText = (voiceName: string) => 
+    `Hey, this is the voice of ${voiceName}. You can adjust my speed, pitch, and the story's temperature to hear how I sound.`;
+
 const App: React.FC = () => {
-  const [storyText, setStoryText] = useState<string>('');
+  const [voice, setVoice] = useState<string>('Charon');
+  
+  const [storyText, setStoryText] = useState<string>(() => generateDefaultText(voice));
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
@@ -15,22 +20,77 @@ const App: React.FC = () => {
   const [suggestedFix, setSuggestedFix] = useState<string | null>(null);
   const [playbackRate, setPlaybackRate] = useState<number>(1);
   const [pitch, setPitch] = useState<number>(0);
-  const [temperature, setTemperature] = useState<number>(0.3);
-  const [voice, setVoice] = useState<string>('Charon');
+  const [temperature, setTemperature] = useState<number>(1);
   const [audioData, setAudioData] = useState<Uint8Array | null>(null);
   const [storyTitle, setStoryTitle] = useState<string>('story');
+  const [duration, setDuration] = useState<number>(0);
+  const [currentTime, setCurrentTime] = useState<number>(0);
+  const [audioCache, setAudioCache] = useState<Record<string, Uint8Array>>({});
 
   const audioContextRef = useRef<AudioContext | null>(null);
   const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  const audioBufferRef = useRef<AudioBuffer | null>(null);
+  const animationFrameIdRef = useRef<number | null>(null);
+  const playbackStartTimeRef = useRef<number>(0);
+  const startOffsetRef = useRef<number>(0);
+
+  useEffect(() => {
+    const preloadVoices = async () => {
+        console.log("Preloading default voice audio...");
+        for (const voiceName of VOICES) {
+            try {
+                if (audioCache[voiceName]) continue;
+
+                const defaultText = generateDefaultText(voiceName);
+                const base64Audio = await generateSpeech(defaultText, 1, voiceName); // Use default temp of 1
+                const decodedData = decode(base64Audio);
+                setAudioCache(prevCache => ({
+                    ...prevCache,
+                    [voiceName]: decodedData,
+                }));
+                console.log(`Successfully cached audio for ${voiceName}.`);
+            } catch (error) {
+                console.error(`Failed to preload audio for voice ${voiceName}:`, error);
+            }
+        }
+    };
+
+    preloadVoices();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Run only once on mount
+
+  useEffect(() => {
+    setStoryText(currentStory => {
+        const isDefault = VOICES.some(v => currentStory === generateDefaultText(v));
+        if (isDefault) {
+            return generateDefaultText(voice);
+        }
+        return currentStory;
+    });
+  }, [voice]);
 
   const stopPlayback = useCallback(() => {
     if (audioSourceRef.current) {
+      audioSourceRef.current.onended = null;
       audioSourceRef.current.stop();
       audioSourceRef.current.disconnect();
       audioSourceRef.current = null;
     }
+    if (animationFrameIdRef.current) {
+      cancelAnimationFrame(animationFrameIdRef.current);
+      animationFrameIdRef.current = null;
+    }
     setIsPlaying(false);
   }, []);
+
+  useEffect(() => {
+    stopPlayback();
+    audioBufferRef.current = null;
+    setAudioData(null);
+    setCurrentTime(0);
+    setDuration(0);
+    setStoryTitle('story');
+  }, [storyText, voice, temperature, stopPlayback]);
 
   useEffect(() => {
     if (audioSourceRef.current && isPlaying) {
@@ -47,27 +107,59 @@ const App: React.FC = () => {
     }
   };
 
-  const handlePlay = async () => {
-    if (isPlaying) {
-      stopPlayback();
-      return;
+  const formatTime = (seconds: number) => {
+    if (isNaN(seconds) || seconds < 0) return '0:00';
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = Math.floor(seconds % 60);
+    return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
+  };
+
+  const startPlayback = useCallback((offset: number) => {
+    if (!audioBufferRef.current || !audioContextRef.current) return;
+
+    if (audioSourceRef.current) {
+        audioSourceRef.current.onended = null;
+        audioSourceRef.current.stop();
     }
 
-    if (!storyText.trim()) {
-      setError('Please enter a story to read.');
-      return;
-    }
+    const source = audioContextRef.current.createBufferSource();
+    source.buffer = audioBufferRef.current;
+    source.playbackRate.value = playbackRate;
+    source.detune.value = pitch;
+    source.connect(audioContextRef.current.destination);
 
-    setIsLoading(true);
-    setError(null);
-    setSuggestedFix(null);
-    setAudioData(null);
-    setStoryTitle('story'); // Reset title to default
+    const safeOffset = Math.max(0, Math.min(offset, duration));
+    source.start(0, safeOffset);
 
-    try {
-      const processedText = expandAcronyms(storyText);
-      const base64Audio = await generateSpeech(processedText, temperature, voice);
+    source.onended = () => {
+        if (audioSourceRef.current === source) {
+            stopPlayback();
+            setCurrentTime(duration);
+        }
+    };
 
+    audioSourceRef.current = source;
+    playbackStartTimeRef.current = audioContextRef.current.currentTime;
+    startOffsetRef.current = safeOffset;
+    setIsPlaying(true);
+
+    const updateProgress = () => {
+        if (!audioSourceRef.current || !audioContextRef.current) return;
+
+        const elapsedTime = (audioContextRef.current.currentTime - playbackStartTimeRef.current) * playbackRate;
+        const newTime = startOffsetRef.current + elapsedTime;
+
+        if (newTime >= duration) {
+            setCurrentTime(duration);
+        } else {
+            setCurrentTime(newTime);
+            animationFrameIdRef.current = requestAnimationFrame(updateProgress);
+        }
+    };
+    animationFrameIdRef.current = requestAnimationFrame(updateProgress);
+  }, [playbackRate, pitch, duration, stopPlayback]);
+
+  const playDecodedAudio = useCallback(async (decodedData: Uint8Array) => {
       if (!audioContextRef.current) {
         audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
       }
@@ -77,10 +169,8 @@ const App: React.FC = () => {
         await audioContext.resume();
       }
 
-      const decodedData = decode(base64Audio);
-      setAudioData(decodedData); // Save for download
+      setAudioData(decodedData);
       
-      // Fire-and-forget title generation in the background
       generateStoryTitle(storyText)
         .then(setStoryTitle)
         .catch(err => {
@@ -90,22 +180,52 @@ const App: React.FC = () => {
         
       const audioBuffer = await decodeAudioData(decodedData, audioContext, 24000, 1);
       
+      audioBufferRef.current = audioBuffer;
+      setDuration(audioBuffer.duration);
+      setCurrentTime(0);
+      startPlayback(0);
+  }, [startPlayback, storyText]);
+
+  const handlePlay = async () => {
+    if (isPlaying) {
       stopPlayback();
+      return;
+    }
 
-      const source = audioContext.createBufferSource();
-      source.buffer = audioBuffer;
-      source.playbackRate.value = playbackRate;
-      source.detune.value = pitch;
-      source.connect(audioContext.destination);
-      source.start();
+    if (audioBufferRef.current) {
+        const resumeTime = currentTime >= duration ? 0 : currentTime;
+        startPlayback(resumeTime);
+        return;
+    }
+
+    if (!storyText.trim()) {
+      setError('Please enter a story to read.');
+      return;
+    }
+
+    const isDefaultText = storyText === generateDefaultText(voice);
+    const cachedAudio = audioCache[voice];
+
+    if (isDefaultText && cachedAudio) {
+      await playDecodedAudio(cachedAudio);
+      return;
+    }
+
+    setIsLoading(true);
+    setError(null);
+    setSuggestedFix(null);
+
+    try {
+      const processedText = expandAcronyms(storyText);
+      const base64Audio = await generateSpeech(processedText, temperature, voice);
+      const decodedData = decode(base64Audio);
+
+      if (isDefaultText && !cachedAudio) {
+        setAudioCache(prev => ({...prev, [voice]: decodedData}));
+      }
       
-      source.onended = () => {
-        setIsPlaying(false);
-        audioSourceRef.current = null;
-      };
+      await playDecodedAudio(decodedData);
 
-      audioSourceRef.current = source;
-      setIsPlaying(true);
     } catch (err) {
       console.error('Error generating or playing speech:', err);
       if (err instanceof Error && err.message.includes('PROHIBITED_CONTENT')) {
@@ -122,8 +242,19 @@ const App: React.FC = () => {
         setError('Failed to generate audio. The story might be too complex or too long. Please try a shorter story or try again later.');
       }
       setIsPlaying(false);
+      audioBufferRef.current = null;
+      setDuration(0);
+      setCurrentTime(0);
     } finally {
       setIsLoading(false);
+    }
+  };
+  
+  const handleScrub = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const newTime = parseFloat(e.target.value);
+    setCurrentTime(newTime);
+    if (isPlaying) {
+        startPlayback(newTime);
     }
   };
 
@@ -235,6 +366,24 @@ const App: React.FC = () => {
         </main>
 
         <footer className="flex flex-col items-center justify-center space-y-4">
+          {duration > 0 && !isLoading && (
+            <div className="w-full flex items-center gap-3 text-sm">
+                <span className="font-mono text-gray-400 tabular-nums">{formatTime(currentTime)}</span>
+                <input
+                    type="range"
+                    aria-label="Audio progress"
+                    min="0"
+                    max={duration}
+                    step="0.1"
+                    value={currentTime}
+                    onChange={handleScrub}
+                    disabled={isLoading}
+                    className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-brand-orange disabled:accent-gray-600"
+                />
+                <span className="font-mono text-gray-400 tabular-nums">{formatTime(duration)}</span>
+            </div>
+          )}
+
           {audioData && !isLoading && (
               <div className="text-center w-full bg-gray-700/50 p-3 rounded-lg">
                   <p className="text-sm text-gray-400 font-medium">Download Filename</p>
@@ -243,7 +392,7 @@ const App: React.FC = () => {
                   </p>
               </div>
           )}
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-4 pt-2">
             <button
               onClick={handlePlay}
               disabled={isLoading}
